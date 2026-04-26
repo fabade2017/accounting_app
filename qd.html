@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>DB QA Dashboard</title>
+
+  <!-- Bootstrap 5 -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/css/bootstrap.min.css" rel="stylesheet"/>
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+  <style>
+    body { background:#f7f9fc; padding:20px; }
+    .card { box-shadow: 0 6px 18px rgba(23, 23, 23, 0.06); }
+    .stat { font-size: 1.6rem; font-weight: 700; }
+    .small-muted { font-size: .9rem; color:#666; }
+    .table-wrap { max-height: 420px; overflow:auto; }
+  </style>
+</head>
+<body>
+
+<div class="container-fluid">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h3>Database QA Dashboard</h3>
+    <div>
+      <button id="btn-run-tests" class="btn btn-primary">Run All Tests</button>
+      <button id="btn-refresh" class="btn btn-outline-secondary">Refresh</button>
+      <button id="btn-export" class="btn btn-outline-success">Export CSV</button>
+    </div>
+  </div>
+
+  <div class="row g-3">
+    <div class="col-md-4">
+      <div class="card p-3">
+        <div class="small-muted">Summary</div>
+        <div class="d-flex align-items-center mt-2">
+          <div class="me-3 text-center">
+            <div class="stat text-success" id="passed-count">—</div>
+            <div class="small-muted">Passed</div>
+          </div>
+          <div class="me-3 text-center">
+            <div class="stat text-danger" id="failed-count">—</div>
+            <div class="small-muted">Failed</div>
+          </div>
+          <div class="ms-auto">
+            <div class="small-muted">Last run</div>
+            <div id="last-run" class="fw-medium">—</div>
+          </div>
+        </div>
+
+        <hr/>
+        <div class="small-muted mb-1">Filter by Module</div>
+        <select id="module-filter" class="form-select">
+          <option value="">All modules</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="col-md-8">
+      <div class="card p-3">
+        <div class="d-flex justify-content-between align-items-center">
+          <div>
+            <div class="small-muted">Test Results Distribution</div>
+            <div class="fw-semibold">Passed vs Failed</div>
+          </div>
+          <div>
+            <button id="btn-refresh-charts" class="btn btn-sm btn-outline-secondary">Refresh charts</button>
+          </div>
+        </div>
+
+        <div class="row mt-3">
+          <div class="col-md-6">
+            <canvas id="pieChart" height="220"></canvas>
+          </div>
+          <div class="col-md-6">
+            <canvas id="barChart" height="220"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-3 mt-3">
+    <div class="col-12">
+      <div class="card p-3">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h5 class="mb-0">Latest Test Results</h5>
+          <div class="small-muted">Shows the most recent 200 tests</div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="table table-sm table-hover" id="results-table">
+            <thead class="table-light">
+              <tr>
+                <th>#</th>
+                <th>Module</th>
+                <th>Test</th>
+                <th>Expected</th>
+                <th>Actual</th>
+                <th>Passed</th>
+                <th>When</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="position-fixed bottom-0 end-0 p-3" style="z-index:1050"></div>
+</div>
+
+<script>
+/*
+  QA Dashboard
+  - configure API_BASE if your API is at a different origin
+  - Procedure route name: POST /api/procedures/runalldbtests
+  - Results table route: GET /api/dbqaresults
+*/
+const API_BASE = 'http://localhost:5017'; // if served from same origin leave blank, otherwise set e.g. "http://localhost:5017"
+const PROC_RUN_ENDPOINT = API_BASE + '/api/procedures/runalldbtests';        // runs RunAllDbTests proc
+const QA_RESULTS_ENDPOINT = API_BASE + '/api/dbqaresults';                  // gets rows from DbQaResults
+
+const elm = {
+  btnRun: document.getElementById('btn-run-tests'),
+  btnRefresh: document.getElementById('btn-refresh'),
+  btnExport: document.getElementById('btn-export'),
+  btnRefreshCharts: document.getElementById('btn-refresh-charts'),
+  passedCount: document.getElementById('passed-count'),
+  failedCount: document.getElementById('failed-count'),
+  lastRun: document.getElementById('last-run'),
+  moduleFilter: document.getElementById('module-filter'),
+  tableBody: document.querySelector('#results-table tbody'),
+  pieCanvas: document.getElementById('pieChart').getContext('2d'),
+  barCanvas: document.getElementById('barChart').getContext('2d'),
+  toast: document.getElementById('toast')
+};
+
+let pieChart, barChart;
+let latestData = [];
+
+function showToast(msg, type='info') {
+  const id = 't-' + Date.now();
+  const bg = type === 'error' ? 'bg-danger text-white' : (type === 'success' ? 'bg-success text-white' : 'bg-dark text-white');
+  const el = document.createElement('div');
+  el.className = `toast ${bg} p-2 mb-2`;
+  el.id = id;
+  el.innerHTML = msg;
+  elm.toast.appendChild(el);
+  setTimeout(() => {
+    el.classList.add('fade');
+    setTimeout(()=> el.remove(), 400);
+  }, 3000);
+}
+
+async function runAllTests() {
+  if (!confirm('Run all DB QA tests now? This may take some seconds.')) return;
+  elm.btnRun.disabled = true;
+  showToast('Running tests...', 'info');
+  try {
+    const res = await fetch(PROC_RUN_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(res.status + ' ' + text);
+    }
+    showToast('Tests started/completed', 'success');
+    await loadResults();
+  } catch (err) {
+    console.error(err);
+    showToast('Run failed: ' + err.message, 'error');
+  } finally {
+    elm.btnRun.disabled = false;
+  }
+}
+
+async function loadResults() {
+  elm.btnRefresh.disabled = true;
+  try {
+    const q = '?$top=500&$orderby=TestDate desc'; // if your API supports OData-like parameters, otherwise ignore
+    const res = await fetch(QA_RESULTS_ENDPOINT);
+    if (!res.ok) throw new Error('Failed to load results: ' + res.status);
+    const data = await res.json();
+    latestData = Array.isArray(data) ? data : (data.value || []);
+    renderSummary(latestData);
+    renderFilter(latestData);
+    renderTable(latestData);
+    renderCharts(latestData);
+  } catch (err) {
+    console.error(err);
+    showToast('Load failed: ' + err.message, 'error');
+  } finally {
+    elm.btnRefresh.disabled = false;
+  }
+}
+
+function renderSummary(rows) {
+  const passed = rows.filter(r => r.Passed === true || r.Passed === 1).length;
+  const failed = rows.length - passed;
+  elm.passedCount.textContent = passed;
+  elm.failedCount.textContent = failed;
+  const last = rows.length ? new Date(rows[0].TestDate) : null;
+  elm.lastRun.textContent = last ? last.toLocaleString() : 'n/a';
+}
+
+function renderFilter(rows) {
+  const modules = Array.from(new Set(rows.map(r => r.Module))).filter(Boolean).sort();
+  const sel = elm.moduleFilter;
+  const current = sel.value;
+  sel.innerHTML = '<option value="">All modules</option>' + modules.map(m => `<option value="${m}">${m}</option>`).join('');
+  if (modules.includes(current)) sel.value = current;
+}
+
+function renderTable(rows) {
+  const filter = elm.moduleFilter.value;
+  const visible = filter ? rows.filter(r => r.Module === filter) : rows;
+  const html = visible.slice(0, 500).map((r, i) => `
+    <tr>
+      <td>${r.QaId ?? (i+1)}</td>
+      <td>${escapeHtml(r.Module)}</td>
+      <td>${escapeHtml(r.TestName)}</td>
+      <td style="max-width:240px;white-space:pre-wrap">${escapeHtml(r.ExpectedResult)}</td>
+      <td style="max-width:240px;white-space:pre-wrap">${escapeHtml(r.ActualResult)}</td>
+      <td>${(r.Passed === true || r.Passed === 1) ? '<span class="badge bg-success">PASS</span>' : '<span class="badge bg-danger">FAIL</span>'}</td>
+      <td>${r.TestDate ? new Date(r.TestDate).toLocaleString() : ''}</td>
+    </tr>
+  `).join('');
+  elm.tableBody.innerHTML = html;
+}
+
+function escapeHtml(s) {
+  if (s === null || s === undefined) return '';
+  return String(s).replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+function renderCharts(rows) {
+  const modules = {};
+  rows.forEach(r => {
+    const mod = r.Module || 'Unknown';
+    if (!modules[mod]) modules[mod] = { passed:0, failed:0 };
+    if (r.Passed === true || r.Passed === 1) modules[mod].passed++;
+    else modules[mod].failed++;
+  });
+
+  const labels = Object.keys(modules);
+  const passedData = labels.map(l => modules[l].passed);
+  const failedData = labels.map(l => modules[l].failed);
+
+  // Pie: overall passed vs failed
+  const totalPassed = passedData.reduce((a,b)=>a+b,0);
+  const totalFailed = failedData.reduce((a,b)=>a+b,0);
+
+  const pieData = {
+    labels: ['Passed','Failed'],
+    datasets: [{ data: [totalPassed, totalFailed], backgroundColor: ['#28a745','#dc3545'] }]
+  };
+
+  if (pieChart) pieChart.destroy();
+  pieChart = new Chart(elm.pieCanvas, { type: 'pie', data: pieData, options: { plugins: { legend: { position: 'bottom' } } } });
+
+  // Bar: per-module fail counts
+  const barData = { labels, datasets: [{ label: 'Failed', data: failedData, backgroundColor: labels.map((_,i) => colorForIndex(i)) }] };
+
+  if (barChart) barChart.destroy();
+  barChart = new Chart(elm.barCanvas, { type: 'bar', data: barData, options: {
+      indexAxis: 'y',
+      plugins: { legend: { display: false } },
+      scales: { x: { beginAtZero:true } }
+  }});
+}
+
+function colorForIndex(i) {
+  const palette = ['#4e79a7','#f28e2b','#e15759','#76b7b2','#59a14f','#edc949','#af7aa1','#ff9da7','#9c755f','#bab0ac'];
+  return palette[i % palette.length];
+}
+
+function exportCsv() {
+  if (!latestData.length) { showToast('No results to export','error'); return; }
+  const headers = ['QaId','Module','TestName','ExpectedResult','ActualResult','Passed','TestDate'];
+  const rows = latestData.map(r => headers.map(h => `"${(r[h] ?? '')}".replace(/"/g,'""')"`).join(','));
+  // simpler CSV build:
+  const csv = [headers.join(','), ...latestData.map(r => headers.map(h => `"${String(r[h] ?? '').replace(/"/g,'""')}"`).join(','))].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'dbqa_results.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast('Export started','success');
+}
+
+// event wiring
+elm.btnRun.addEventListener('click', runAllTests);
+elm.btnRefresh.addEventListener('click', loadResults);
+elm.btnExport.addEventListener('click', exportCsv);
+elm.btnRefreshCharts.addEventListener('click', () => renderCharts(latestData));
+elm.moduleFilter.addEventListener('change', () => renderTable(latestData));
+
+// initial load
+loadResults();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,14 @@
+{
+ 
+  "groupByOptions": [
+    { "value": "company", "label": "Company" },
+    { "value": "warehouse", "label": "Warehouse" }
+  ],
+    "groupby": [
+    { "value": "Product", "label": "Product" },
+  {   "value": "Customer", "label": "Customer" },
+  {   "value": "Month", "label": "Month" }
+  ]
+}
+
+
