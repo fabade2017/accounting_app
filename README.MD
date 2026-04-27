@@ -10,8 +10,8 @@ This is a full-stack accounting application designed to manage financial transac
 - Basic reporting system
 
 ## Tech Stack
-- Frontend: HTML5, JavaScript
-- Backend: (put what you used e.g. C#, PHP, Node.js)
+- Frontend: HTML5, JavaScript, Typescript, React
+- Backend: (put what you used e.g. C#, Node.js)
 - Database: (MySQL / MSSQL)
 
 ## Purpose
